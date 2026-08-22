@@ -72,6 +72,16 @@ jobs:
         shell: pwsh
         run: npx electron-builder --win dir --x64 --publish never
 
+      - name: Add unpacked update metadata
+        shell: pwsh
+        run: |
+          $updateFile = Join-Path $PWD "dist\win-unpacked\resources\app-update.yml"
+          @(
+            "provider: github",
+            "owner: supravietuitor",
+            "repo: openhanako"
+          ) | Set-Content -Encoding ascii -LiteralPath $updateFile
+
       - name: Verify unpacked directory contents
         shell: pwsh
         run: |
