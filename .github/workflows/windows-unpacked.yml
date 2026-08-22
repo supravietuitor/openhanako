@@ -108,18 +108,12 @@ jobs:
             -WorkingDirectory $unpacked -PassThru
           Start-Sleep -Seconds 15
 
-          $expected = @(
-            "electron\user-data",
-            "electron\session-data",
-            "electron\cache",
-            "electron\logs",
-            "electron\crash-dumps"
-          )
-          foreach ($relative in $expected) {
-            $path = Join-Path $hanaHome $relative
-            if (-not (Test-Path -LiteralPath $path)) {
-              throw "HANA_HOME path was not created: $relative"
-            }
+          $electronRoot = Join-Path $hanaHome "electron"
+          if (-not (Test-Path -LiteralPath $electronRoot)) {
+            throw "Electron storage root was not created under HANA_HOME"
+          }
+          if (-not (Test-Path -LiteralPath (Join-Path $electronRoot "user-data"))) {
+            throw "Electron userData was not created under HANA_HOME"
           }
 
           foreach ($relative in @("HanaAgent", "Hanako")) {

@@ -6,7 +6,6 @@
  * get different namespaces, while duplicate launches within the same home are
  * redirected to the first client.
  */
-const fs = require("fs");
 const path = require("path");
 
 function exitDuplicateClient(app) {
@@ -26,10 +25,6 @@ function configureElectronStoragePaths(app, hanakoHome) {
     logs: path.join(electronRoot, "logs"),
     crashDumps: path.join(electronRoot, "crash-dumps"),
   };
-
-  for (const directory of Object.values(paths)) {
-    fs.mkdirSync(directory, { recursive: true });
-  }
 
   // Electron requires sessionData to be set before ready. Chromium's disk
   // cache has no portable app.setPath key, so force it to the sibling cache
