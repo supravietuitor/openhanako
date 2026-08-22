@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import path from "path";
 
 import {
+  configureElectronStoragePaths,
   configureClientSingleInstance,
   focusExistingWindow,
 } from "../desktop/src/shared/single-instance-lock.cjs";
@@ -15,6 +16,8 @@ function makeApp({ gotLock = true } = {}) {
         return path.join("C:", "tmp");
       }),
       setPath: vi.fn(),
+      setAppLogsPath: vi.fn(),
+      commandLine: { appendSwitch: vi.fn() },
       requestSingleInstanceLock: vi.fn(() => gotLock),
       on: vi.fn((event, handler) => handlers.set(event, handler)),
       exit: vi.fn(),
@@ -25,7 +28,7 @@ function makeApp({ gotLock = true } = {}) {
 }
 
 describe("desktop client single instance lock", () => {
-  it("sets the dev userData namespace before requesting the lock", () => {
+  it("redirects Electron persistence before requesting the lock", () => {
     const { app } = makeApp();
     const defaultHome = path.join("C:", "Users", "me", ".hanako");
     const devHome = path.join("C:", "Users", "me", ".hanako-dev");
@@ -37,16 +40,21 @@ describe("desktop client single instance lock", () => {
     });
 
     expect(acquired).toBe(true);
-    expect(app.setPath).toHaveBeenCalledWith(
-      "userData",
-      path.join("C:", "Users", "me", "AppData", "Roaming", "Hanako-dev"),
+    const electronRoot = path.join("C:", "Users", "me", ".hanako-dev", "electron");
+    expect(app.setPath).toHaveBeenCalledWith("userData", path.join(electronRoot, "user-data"));
+    expect(app.setPath).toHaveBeenCalledWith("sessionData", path.join(electronRoot, "session-data"));
+    expect(app.setPath).toHaveBeenCalledWith("crashDumps", path.join(electronRoot, "crash-dumps"));
+    expect(app.setAppLogsPath).toHaveBeenCalledWith(path.join(electronRoot, "logs"));
+    expect(app.commandLine.appendSwitch).toHaveBeenCalledWith(
+      "disk-cache-dir",
+      path.join(electronRoot, "cache"),
     );
     expect(app.setPath.mock.invocationCallOrder[0]).toBeLessThan(
       app.requestSingleInstanceLock.mock.invocationCallOrder[0],
     );
   });
 
-  it("keeps production in the legacy Electron userData namespace", () => {
+  it("uses the same HANA_HOME storage layout for production", () => {
     const { app } = makeApp();
     const defaultHome = path.join("C:", "Users", "me", ".hanako");
 
@@ -57,11 +65,24 @@ describe("desktop client single instance lock", () => {
     });
 
     expect(acquired).toBe(true);
-    expect(app.setPath).toHaveBeenCalledWith(
-      "userData",
-      path.join("C:", "Users", "me", "AppData", "Roaming", "Hanako"),
-    );
+    const electronRoot = path.join("C:", "Users", "me", ".hanako", "electron");
+    expect(app.setPath).toHaveBeenCalledWith("userData", path.join(electronRoot, "user-data"));
+    expect(app.setPath).toHaveBeenCalledWith("sessionData", path.join(electronRoot, "session-data"));
     expect(app.requestSingleInstanceLock).toHaveBeenCalledTimes(1);
+  });
+
+  it("configures all Electron storage paths under HANA_HOME", () => {
+    const { app } = makeApp();
+    const home = path.join("C:", "hana-agent");
+    const paths = configureElectronStoragePaths(app, home);
+
+    expect(paths).toEqual({
+      userData: path.join(home, "electron", "user-data"),
+      sessionData: path.join(home, "electron", "session-data"),
+      cache: path.join(home, "electron", "cache"),
+      logs: path.join(home, "electron", "logs"),
+      crashDumps: path.join(home, "electron", "crash-dumps"),
+    });
   });
 
   it("exits a duplicate client before registering second-instance handlers", () => {

@@ -1,0 +1,153 @@
+name: Windows Unpacked
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref to build
+        required: true
+        default: hanaagent-paths
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout requested ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.15.0"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download MinGit
+        run: node scripts/download-mingit.js
+
+      - name: Smoke-test MinGit
+        run: node scripts/smoke-mingit.mjs vendor/mingit
+
+      - name: Build client bundles
+        run: npm run build:client
+
+      - name: Prepare ephemeral signing key
+        shell: bash
+        run: |
+          node scripts/artifact-keygen.mjs \
+            --out "$RUNNER_TEMP/hana-ci-sign-key.pem" \
+            --key-id ci-unpacked \
+            > "$RUNNER_TEMP/hana-ci-key.json"
+          node -e \
+            'const fs = require("fs"); const entry = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); fs.writeFileSync(process.argv[2], JSON.stringify([entry]));' \
+            "$RUNNER_TEMP/hana-ci-key.json" \
+            "$RUNNER_TEMP/hana-ci-keyset.json"
+          echo "HANA_SIGN_KEY=$RUNNER_TEMP/hana-ci-sign-key.pem" >> "$GITHUB_ENV"
+          echo "HANA_SIGN_KEYSET=$RUNNER_TEMP/hana-ci-keyset.json" >> "$GITHUB_ENV"
+
+      - name: Build Windows server bundle
+        run: node scripts/build-server.mjs win32 x64
+
+      - name: Build Windows sandbox helper
+        run: node scripts/build-windows-sandbox-helper.mjs x64
+
+      - name: Build Windows standalone server archive
+        run: node scripts/build-standalone-server-artifact.mjs x64
+
+      - name: Verify Windows standalone server archive
+        run: node scripts/verify-standalone-server-artifact.mjs x64 --smoke
+
+      - name: Verify seed kit
+        run: node scripts/verify-seed-kit.mjs win32 x64
+
+      - name: Build unpacked Electron directory
+        shell: pwsh
+        run: npx electron-builder --win dir --x64 --publish never
+
+      - name: Verify unpacked directory contents
+        shell: pwsh
+        run: |
+          $unpacked = Join-Path $PWD "dist\win-unpacked"
+          $required = @(
+            "HanaAgent.exe",
+            "resources\app.asar",
+            "resources\app-update.yml",
+            "resources\seed",
+            "resources\git",
+            "resources\sandbox"
+          )
+          foreach ($relative in $required) {
+            $path = Join-Path $unpacked $relative
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Missing unpacked artifact path: $relative"
+            }
+          }
+          Get-ChildItem -LiteralPath $unpacked -Force | Select-Object Name, Length
+
+      - name: Smoke-test HANA_HOME Electron paths
+        shell: pwsh
+        run: |
+          $unpacked = Join-Path $PWD "dist\win-unpacked"
+          $hanaHome = Join-Path $env:RUNNER_TEMP "hana-home-smoke"
+          $appData = Join-Path $env:RUNNER_TEMP "appdata-smoke"
+          $localAppData = Join-Path $env:RUNNER_TEMP "localappdata-smoke"
+          New-Item -ItemType Directory -Path $hanaHome, $appData, $localAppData -Force | Out-Null
+          $env:HANA_HOME = $hanaHome
+          $env:APPDATA = $appData
+          $env:LOCALAPPDATA = $localAppData
+
+          $process = Start-Process -FilePath (Join-Path $unpacked "HanaAgent.exe") `
+            -WorkingDirectory $unpacked -PassThru
+          Start-Sleep -Seconds 15
+
+          $electronRoot = Join-Path $hanaHome "electron"
+          if (-not (Test-Path -LiteralPath $electronRoot)) {
+            throw "Electron storage root was not created under HANA_HOME"
+          }
+          if (-not (Test-Path -LiteralPath (Join-Path $electronRoot "user-data"))) {
+            throw "Electron userData was not created under HANA_HOME"
+          }
+
+          foreach ($relative in @("HanaAgent", "Hanako")) {
+            foreach ($root in @($appData, $localAppData)) {
+              $path = Join-Path $root $relative
+              if (Test-Path -LiteralPath $path) {
+                throw "Electron data escaped HANA_HOME: $path"
+              }
+            }
+          }
+
+          Get-CimInstance Win32_Process |
+            Where-Object { $_.ProcessId -eq $process.Id -or $_.ParentProcessId -eq $process.Id } |
+            ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+          Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+          Write-Host "HANA_HOME Electron path smoke test passed."
+
+      - name: Package unpacked directory
+        shell: pwsh
+        run: |
+          $version = node -p "require('./package.json').version"
+          $zip = Join-Path $PWD "dist\HanaAgent-$version-Windows-x64-unpacked.zip"
+          Compress-Archive -Path (Join-Path $PWD "dist\win-unpacked\*") `
+            -DestinationPath $zip -CompressionLevel Optimal
+          $hash = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant()
+          "$hash  $(Split-Path $zip -Leaf)" | Set-Content -Encoding ascii "$zip.sha256"
+          Get-Item $zip, "$zip.sha256" | Select-Object FullName, Length
+
+      - name: Upload unpacked package
+        uses: actions/upload-artifact@v4
+        with:
+          name: HanaAgent-windows-x64-unpacked
+          retention-days: 7
+          path: |
+            dist/*-Windows-x64-unpacked.zip
+            dist/*-Windows-x64-unpacked.zip.sha256
+          if-no-files-found: error

@@ -8,26 +8,34 @@
  */
 const path = require("path");
 
-function normalizeForCompare(filePath) {
-  const resolved = path.resolve(filePath);
-  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
-}
-
-function getUserDataAppName(hanakoHome, defaultHome) {
-  if (normalizeForCompare(hanakoHome) === normalizeForCompare(defaultHome)) {
-    return "Hanako";
-  }
-  const suffix = path.basename(hanakoHome).replace(/^\./, "");
-  if (!suffix) return "Hanako";
-  return suffix.charAt(0).toUpperCase() + suffix.slice(1);
-}
-
 function exitDuplicateClient(app) {
   if (typeof app.exit === "function") {
     app.exit(0);
     return;
   }
   app.quit();
+}
+
+function configureElectronStoragePaths(app, hanakoHome) {
+  const electronRoot = path.join(hanakoHome, "electron");
+  const paths = {
+    userData: path.join(electronRoot, "user-data"),
+    sessionData: path.join(electronRoot, "session-data"),
+    cache: path.join(electronRoot, "cache"),
+    logs: path.join(electronRoot, "logs"),
+    crashDumps: path.join(electronRoot, "crash-dumps"),
+  };
+
+  // Electron requires sessionData to be set before ready. Chromium's disk
+  // cache has no portable app.setPath key, so force it to the sibling cache
+  // directory before Chromium initializes.
+  app.setPath("userData", paths.userData);
+  app.setPath("sessionData", paths.sessionData);
+  app.setPath("crashDumps", paths.crashDumps);
+  app.setAppLogsPath(paths.logs);
+  app.commandLine.appendSwitch("disk-cache-dir", paths.cache);
+
+  return paths;
 }
 
 function focusExistingWindow(win) {
@@ -39,11 +47,8 @@ function focusExistingWindow(win) {
 }
 
 function configureClientSingleInstance(app, opts) {
-  const { hanakoHome, defaultHome, onSecondInstance } = opts;
-  const appName = getUserDataAppName(hanakoHome, defaultHome);
-  if (appName) {
-    app.setPath("userData", path.join(app.getPath("appData"), appName));
-  }
+  const { hanakoHome, onSecondInstance } = opts;
+  configureElectronStoragePaths(app, hanakoHome);
 
   const gotLock = app.requestSingleInstanceLock({ hanakoHome });
   if (!gotLock) {
@@ -58,7 +63,7 @@ function configureClientSingleInstance(app, opts) {
 }
 
 module.exports = {
+  configureElectronStoragePaths,
   configureClientSingleInstance,
   focusExistingWindow,
-  getUserDataAppName,
 };
