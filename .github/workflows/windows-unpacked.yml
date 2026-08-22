@@ -79,6 +79,7 @@ jobs:
           $required = @(
             "HanaAgent.exe",
             "resources\app.asar",
+            "resources\app-update.yml",
             "resources\seed",
             "resources\git",
             "resources\sandbox"
